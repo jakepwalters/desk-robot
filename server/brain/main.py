@@ -65,7 +65,9 @@ brain: RobotBrain | None = None  # created in main() once the event loop exists
 ears: Ears | None = None
 # (text, when speech began, when it ended, when the transcript was ready)
 heard: asyncio.Queue[tuple[str, float, float, float]] = asyncio.Queue()
-grokybot_replies: asyncio.Queue[str] = asyncio.Queue()   # Groky Bot's answers, spoken when he's free (brain/grokybot.py)
+grokybot_replies: asyncio.Queue[grokybot.Update] = asyncio.Queue()   # Groky Bot's answers as they arrive
+grokybot_updates: list[grokybot.Update] = []   # ...not yet told: they go with the next turn (brain/grokybot.py)
+turn_lock = asyncio.Lock()   # one turn at a time: yours, or him bringing up an update by himself
 speech_started = asyncio.Event()  # the human began a new turn (set by the ears)
 awake_until = 0.0  # while time.time() < this, he's awake: no wake word needed
 robot_speak_done = asyncio.Event()  # robot finished playing the last reply
@@ -303,7 +305,7 @@ async def handle_console_line(line: str) -> bool:
         if not arg:
             print("usage: ask <question>")
             return True
-        await converse(arg)
+        await typed_turn(arg)
     elif cmd == "listen":
         if ears is None:
             await start_listening()
@@ -970,7 +972,8 @@ async def gesture_seen(name: str) -> None:
     awake_until = time.time() + config.AWAKE_SECONDS
 
 
-async def converse(question: str, ended_at: float | None = None, heard_at: float | None = None) -> bool:
+async def converse(question: str, ended_at: float | None = None, heard_at: float | None = None,
+                   unprompted: bool = False) -> bool:
     """Ask the brain, show the face, and speak the answer as it forms.
     Returns False if the human started talking again before Rocky spoke
     (the reply was dropped and the question is still open)."""
@@ -1001,6 +1004,17 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
         if perception is not None and config.PERCEPTION and (camera_wanted or jpeg is not None) else ""
     if notes:
         print("  " + notes)
+    # Groky Bot's answers that came in since the last turn ride along with this one (and so stay in his memory).
+    updates = list(grokybot_updates)
+    grokybot_updates.clear()
+    if updates:
+        how = ("Things are quiet, so tell your human now, in one to three short sentences" if unprompted else
+               "Answer what your human just said first, then work this in naturally when it fits")
+        notes = (notes + "\n" if notes else "") + (
+            f"(Update from your Grok Bot side: an answer that just came back to something you asked it earlier. "
+            f"It is not a new request, so don't call ask_groky_bot about it. {how}, in your own words; don't read "
+            "it out word for word or call it someone else.)\n" + "\n".join(u.note() for u in updates))
+        print(f"  (working in {len(updates)} Groky Bot update(s))")
     reply = SpokenReply(loop, tl)
     reply.think_and_speak(question, jpeg, camera_wanted, notes, passive)
     if body is not None:
@@ -1017,6 +1031,7 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
         if body is not None:
             body.quiet()
     if not finished:
+        grokybot_updates[:0] = updates   # dropped with the reply: they go with the next one
         print("  (you kept talking — Rocky will hear the rest and answer once)")
         await send_to_robot({"type": "emotion", "name": "neutral"})
         return False
@@ -1232,7 +1247,7 @@ async def _console_command(action: str, payload: dict) -> dict:
         if not text or len(text) > 300:
             raise ValueError("text must be 1 to 300 characters")
         print(f"console: {action} {text}")
-        asyncio.create_task(say(text) if action == "say" else converse(text))
+        asyncio.create_task(say(text) if action == "say" else typed_turn(text))
     elif action == "tune":
         key = payload.get("key")
         if key not in TUNABLE:
@@ -1383,7 +1398,8 @@ async def voice_loop() -> None:
     while True:
         item = await heard.get()
         try:
-            await _handle_heard(item)
+            async with turn_lock:
+                await _handle_heard(item)
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1461,23 +1477,46 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
         finished = await converse(question, ended_at, heard_at)
 
 
+async def typed_turn(question: str) -> None:
+    """A question typed in the console or dashboard: a turn like a spoken one, never on top of one."""
+    async with turn_lock:
+        await converse(question)
+
+
+QUIET_BEFORE_UPDATE = 3.0   # s of nobody talking before he brings up a Groky Bot answer by himself
+
+
+def _busy(holding_lock: bool = False) -> bool:
+    """A turn is going on, or about to: someone talking, him thinking or speaking, a transcript waiting."""
+    return (thinking or speaking_now() or (turn_lock.locked() and not holding_lock) or not heard.empty()
+            or (ears is not None and (ears.hearing or ears.transcribing)))
+
+
 async def grokybot_loop() -> None:
-    """Speak Groky Bot's answers as they arrive, but never over a conversation: wait until he's quiet, not thinking,
-    and nobody is talking or waiting to be answered."""
-    global awake_until
+    """Groky Bot's answers become updates. Mid-conversation they ride along with your next turn (converse); once
+    it's been quiet a moment he brings them up himself, in his own words."""
     while True:
-        text = await grokybot_replies.get()
+        grokybot_updates.append(await grokybot_replies.get())
         try:
-            while (thinking or speaking_now() or not heard.empty()
-                   or (ears is not None and (ears.hearing or ears.transcribing))):
+            quiet_since = time.time()
+            while grokybot_updates:
+                while not grokybot_replies.empty():
+                    grokybot_updates.append(grokybot_replies.get_nowait())
+                for u in grokybot_updates:
+                    if not u.logged:
+                        u.logged = True
+                        print(f"Groky Bot: {u.text}" + ("  (needs your OK in Grok Bot)" if u.needs_confirm else ""))
+                if _busy():
+                    quiet_since = time.time()
+                elif time.time() - quiet_since >= QUIET_BEFORE_UPDATE:
+                    async with turn_lock:
+                        if grokybot_updates and not _busy(holding_lock=True):
+                            await wake_up()
+                            await converse("(Nobody has said anything new; it's quiet.)", unprompted=True)
+                    quiet_since = time.time()
                 await asyncio.sleep(0.3)
-            print(f"Groky Bot: {text}")
-            await wake_up()
-            await send_to_robot({"type": "emotion", "name": "happy"})
-            await say(text)
-            awake_until = time.time() + config.AWAKE_SECONDS   # so you can answer without "hey"
         except Exception as e:
-            print(f"(couldn't speak Groky Bot's answer: {e})")
+            print(f"(couldn't bring up Groky Bot's answer: {e})")
 
 
 async def console_loop() -> None:

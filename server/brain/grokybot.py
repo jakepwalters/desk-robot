@@ -38,7 +38,21 @@ REPLY_PORT = int(os.environ.get("GROKYBOT_REPLY_PORT") or 8768)
 MAX_REPLY = 64 * 1024   # bytes: a spoken answer plus Groky Bot's testing fields (raw), not a report
 
 ENABLED = bool(WEBHOOK_URL)
-_pending: dict[str, float] = {}   # request id -> when it was sent, for the round trip in the log
+_pending: dict[str, tuple[float, str]] = {}   # request id -> (when it was sent, the task), until the answer comes
+
+
+class Update:
+    """An answer from Groky Bot, waiting to be worked into the conversation."""
+
+    def __init__(self, text: str, task: str = "", needs_confirm: bool = False) -> None:
+        self.text, self.task, self.needs_confirm = text, task, needs_confirm
+        self.logged = False   # printed to the log yet
+
+    def note(self) -> str:
+        about = f' to "{self.task}"' if self.task else ""
+        ok = " It needs your human's OK in the Grok Bot app before anything happens: say so clearly." \
+            if self.needs_confirm else ""
+        return f"Answer{about}: {self.text}{ok}"
 
 
 def tools() -> list[dict]:
@@ -50,8 +64,8 @@ def tools() -> list[dict]:
             "Hand a real task to your full self in the Grok Bot app (Groky Bot). It has your human's email, "
             "calendar, accounts, files and memory, and can research and get things done. Use it for anything you "
             "can't do here: email, calendar, messages, research, plans, anything about their work or life you don't "
-            "know. The answer comes back later, often in a minute or more, and is spoken automatically when it "
-            "arrives. From here it only looks things up: anything that sends, deletes or changes something waits for "
+            "know. The answer comes back later, often in a minute or more, as an update you then tell your human "
+            "about. Keep talking with them normally meanwhile. From here it only looks things up: anything that sends, deletes or changes something waits for "
             "your human's OK in the Grok Bot app. Say one short line as you call it (like \"Checking on that.\"); "
             "that's all. You and Groky Bot are the same assistant to your human: don't talk about handing off."),
         "parameters": {"type": "object", "properties": {
@@ -82,13 +96,13 @@ def ask_groky_bot(args: dict) -> str:
         raise RuntimeError(f"Groky Bot's webhook refused the task (HTTP {e.code}); it didn't go through") from None
     except Exception as e:
         raise RuntimeError(f"couldn't reach Groky Bot ({type(e).__name__}); it didn't go through") from None
-    _pending[rid] = time.time()
+    _pending[rid] = (time.time(), task)
     print(f"  (sent to Groky Bot [{rid}]: {task})")
-    return "Sent. The answer will be spoken automatically when it arrives."
+    return "Sent. The answer comes back later as an update; keep talking normally until then."
 
 
-def serve(on_reply: Callable[[str], None]) -> None:
-    """Listen for Groky Bot's answers on 127.0.0.1:REPLY_PORT. on_reply(text) runs on the server's thread."""
+def serve(on_reply: Callable[[Update], None]) -> None:
+    """Listen for Groky Bot's answers on 127.0.0.1:REPLY_PORT. on_reply(update) runs on the server's thread."""
     if not ENABLED:
         return
     if not REPLY_SECRET:
@@ -140,7 +154,7 @@ def serve(on_reply: Callable[[str], None]) -> None:
                 self._reply(400, {"error": f"bad request: {e}"})
                 return
             rid = str(data.get("id") or "")
-            sent = _pending.pop(rid, None)
+            sent, task = _pending.pop(rid, (None, ""))
             facts = [f"id {rid}" if rid else "no id"]
             if data.get("took_s") is not None:
                 facts.append(f"Groky Bot took {data['took_s']}s")
@@ -149,7 +163,7 @@ def serve(on_reply: Callable[[str], None]) -> None:
             if data.get("needs_confirm"):
                 facts.append("needs your OK in Grok Bot")
             print(f"  (from Groky Bot: {' · '.join(facts)})")
-            on_reply(text)
+            on_reply(Update(text, task, bool(data.get("needs_confirm"))))
             self._reply(200, {"ok": True})
 
     srv = ThreadingHTTPServer(("127.0.0.1", REPLY_PORT), Handler)
