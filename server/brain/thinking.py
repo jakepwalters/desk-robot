@@ -22,6 +22,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 
 import openai
@@ -138,6 +139,11 @@ TOOLS = [
 
 class Interrupted(Exception):
     """The human started talking again; drop this reply."""
+
+
+def _now_line() -> str:
+    """The real date and time, this computer's clock and zone: without it he guesses from his training (wrong year)."""
+    return time.strftime("\n\nRight now it is %A, %B %-d, %Y, %-I:%M %p (%Z).")
 
 
 def _image_part(jpeg: bytes) -> dict:
@@ -268,7 +274,7 @@ class RobotBrain:
             stream = self.client.chat.completions.create(
                 model=config.MODEL,
                 max_tokens=200,  # backstop; the sentence limit does the real work
-                messages=[{"role": "system", "content": personality.SYSTEM_PROMPT}, *self.history],
+                messages=[{"role": "system", "content": personality.SYSTEM_PROMPT + _now_line()}, *self.history],
                 tools=[*TOOLS, *self.extra_tools()] if self.actions else openai.NOT_GIVEN,
                 stream=True,
                 extra_body=self._extra,
