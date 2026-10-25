@@ -175,6 +175,7 @@ class RobotBrain:
         self.quick = quick or set()
         self.emotion = "neutral"        # emotion of the reply in progress
         self._inflight: tuple[int, dict] | None = None  # (index, user message) being answered
+        self.sentence_limit: int | None = None  # this reply's cap instead of config.REPLY_MAX_SENTENCES (an update)
 
     def reply(
         self,
@@ -266,8 +267,8 @@ class RobotBrain:
         """One question, possibly several model calls if it uses its abilities.
         Yields sentences as they complete."""
         nudged = False
-        limit = config.REPLY_MAX_SENTENCES
-        said = 0                 # sentences spoken so far in this reply, across rounds
+        limit = self.sentence_limit or config.REPLY_MAX_SENTENCES
+        said = 0                # sentences spoken so far in this reply, across rounds
         for _ in range(5):
             if cancelled.is_set():
                 raise Interrupted()

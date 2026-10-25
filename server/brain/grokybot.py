@@ -35,6 +35,7 @@ WEBHOOK_KEY = os.environ.get("GROKYBOT_WEBHOOK_KEY", "")
 REPLY_URL = os.environ.get("GROKYBOT_REPLY_URL", "")   # public https URL ending in /grokybot-reply
 REPLY_SECRET = os.environ.get("GROKYBOT_REPLY_SECRET", "")
 REPLY_PORT = int(os.environ.get("GROKYBOT_REPLY_PORT") or 8768)
+SPOKEN_SENTENCES = 6    # a reply passing on an answer may run this long, not the usual few: the details matter
 MAX_REPLY = 64 * 1024   # bytes: a spoken answer plus Groky Bot's testing fields (raw), not a report
 
 ENABLED = bool(WEBHOOK_URL)

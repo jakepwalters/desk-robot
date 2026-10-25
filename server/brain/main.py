@@ -1008,13 +1008,16 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
     updates = list(grokybot_updates)
     grokybot_updates.clear()
     if updates:
-        how = ("Things are quiet, so tell your human now, in one to three short sentences" if unprompted else
-               "Answer what your human just said first, then work this in naturally when it fits")
+        how = ("Things are quiet, so tell your human now" if unprompted else
+               "Answer what your human just said first, then pass this on")
         notes = (notes + "\n" if notes else "") + (
             f"(Update from your Grok Bot side: an answer that just came back to something you asked it earlier. "
-            f"It is not a new request, so don't call ask_groky_bot about it. {how}, in your own words; don't read "
-            "it out word for word or call it someone else.)\n" + "\n".join(u.note() for u in updates))
+            f"It is not a new request, so don't call ask_groky_bot about it. {how}. This is the one time to say "
+            f"more than usual: up to {grokybot.SPOKEN_SENTENCES} sentences, in plain full sentences. Pass on every "
+            "detail: names, times, dates, numbers, what's waiting on them and what they need to do. Don't shorten "
+            "or summarize it away, don't call it someone else, and stop once it's passed on.)\n" + "\n".join(u.note() for u in updates))
         print(f"  (working in {len(updates)} Groky Bot update(s))")
+    brain.sentence_limit = grokybot.SPOKEN_SENTENCES if updates else None
     reply = SpokenReply(loop, tl)
     reply.think_and_speak(question, jpeg, camera_wanted, notes, passive)
     if body is not None:
