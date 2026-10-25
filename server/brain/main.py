@@ -45,7 +45,7 @@ import time
 
 import websockets
 
-from . import chief, computer, config, faces, mouth, personality, settings
+from . import grokybot, computer, config, faces, mouth, personality, settings
 from .body import Body
 from .dance import Dancer, length as dance_length
 from .thinking import Interrupted, RobotBrain
@@ -65,7 +65,7 @@ brain: RobotBrain | None = None  # created in main() once the event loop exists
 ears: Ears | None = None
 # (text, when speech began, when it ended, when the transcript was ready)
 heard: asyncio.Queue[tuple[str, float, float, float]] = asyncio.Queue()
-chief_replies: asyncio.Queue[str] = asyncio.Queue()   # Chief's answers, read out when he's free (brain/chief.py)
+grokybot_replies: asyncio.Queue[str] = asyncio.Queue()   # Groky Bot's answers, spoken when he's free (brain/grokybot.py)
 speech_started = asyncio.Event()  # the human began a new turn (set by the ears)
 awake_until = 0.0  # while time.time() < this, he's awake: no wake word needed
 robot_speak_done = asyncio.Event()  # robot finished playing the last reply
@@ -490,7 +490,7 @@ ABILITIES = {
     "dance": _sync(lambda args: dance()),
     # the computer abilities (computer.py) are plain functions: no event loop, nothing sent to the robot
     **{name: (lambda fn: lambda args: (fn(args), None))(fn) for name, fn in computer.ACTIONS.items()},
-    "ask_chief": lambda args: (chief.ask_chief(args), None),
+    "ask_groky_bot": lambda args: (grokybot.ask_groky_bot(args), None),
 }
 
 
@@ -1461,23 +1461,23 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
         finished = await converse(question, ended_at, heard_at)
 
 
-async def chief_loop() -> None:
-    """Read Chief's answers out as they arrive, but never over a conversation: wait until he's quiet, not thinking,
+async def grokybot_loop() -> None:
+    """Speak Groky Bot's answers as they arrive, but never over a conversation: wait until he's quiet, not thinking,
     and nobody is talking or waiting to be answered."""
     global awake_until
     while True:
-        text = await chief_replies.get()
+        text = await grokybot_replies.get()
         try:
             while (thinking or speaking_now() or not heard.empty()
                    or (ears is not None and (ears.hearing or ears.transcribing))):
                 await asyncio.sleep(0.3)
-            print(f"Chief: {text}")
+            print(f"Groky Bot: {text}")
             await wake_up()
             await send_to_robot({"type": "emotion", "name": "happy"})
-            await say(f"Chief says: {text}")
+            await say(text)
             awake_until = time.time() + config.AWAKE_SECONDS   # so you can answer without "hey"
         except Exception as e:
-            print(f"(couldn't read Chief's answer out: {e})")
+            print(f"(couldn't speak Groky Bot's answer: {e})")
 
 
 async def console_loop() -> None:
@@ -1504,9 +1504,9 @@ async def main() -> None:
     apply_settings(settings.load())
     loop = asyncio.get_running_loop()
     main_loop = loop
-    brain = RobotBrain(ABILITIES, extra_tools=lambda: computer.tools(computer.controller) + chief.tools(),
-                       quick=computer.QUICK | {"ask_chief"})
-    chief.serve(lambda text: loop.call_soon_threadsafe(chief_replies.put_nowait, text))
+    brain = RobotBrain(ABILITIES, extra_tools=lambda: computer.tools(computer.controller) + grokybot.tools(),
+                       quick=computer.QUICK | {"ask_groky_bot"})
+    grokybot.serve(lambda text: loop.call_soon_threadsafe(grokybot_replies.put_nowait, text))
     tracker = Tracker(eyes, lambda p, t, on: loop.call_soon_threadsafe(head_moves.put_nowait, (p, t, on)))
     body = Body(send_to_robot, tracker)
     dancer = Dancer(send_to_robot, tracker)
@@ -1533,7 +1533,7 @@ async def main() -> None:
         doze_task = asyncio.create_task(doze_loop())
         head_task = asyncio.create_task(head_loop())
         mic_task = asyncio.create_task(mic_watch())
-        chief_task = asyncio.create_task(chief_loop())
+        grokybot_task = asyncio.create_task(grokybot_loop())
         if config.LISTEN_ON_START:
             await start_listening()
         try:
@@ -1543,7 +1543,7 @@ async def main() -> None:
             doze_task.cancel()
             head_task.cancel()
             mic_task.cancel()
-            chief_task.cancel()
+            grokybot_task.cancel()
             if ears is not None:
                 stop_listening()
 
